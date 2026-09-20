@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 安装 Qoder CN 每日签到定时任务（launchd，每天 10:05 主跑 + 21:05 兜底）
+# 安装 Qoder（CN/Global）每日签到定时任务（launchd，每天 10:05 主跑 + 21:05 兜底）
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -21,9 +21,9 @@ sed -e "s|__NODE_PATH__|$NODE_PATH|g" \
     -e "s|__FALLBACK_HOUR__|21|g" -e "s|__FALLBACK_MINUTE__|5|g" \
     launchd/cn.qoder.daily-checkin.plist.tpl > "$DATA_DIR/$LABEL.plist"
 
-echo "== 先手动验证一次 claim =="
+echo "== 先手动验证一次 claim（CN + Global，未安装的端自动跳过）=="
 "$NODE_PATH" scripts/qoder-checkin.mjs claim || {
-  echo "验证失败：请确认 Qoder CN IDE 已登录，且允许访问钥匙串条目「Qoder CN App Safe Storage」"; exit 1; }
+  echo "验证失败：请确认 Qoder IDE 已登录，且允许访问钥匙串条目「Qoder CN App Safe Storage」/「Qoder Safe Storage」"; exit 1; }
 
 mkdir -p "$HOME/Library/LaunchAgents"
 cp "$DATA_DIR/$LABEL.plist" "$HOME/Library/LaunchAgents/"

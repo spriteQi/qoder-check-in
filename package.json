@@ -1,0 +1,15 @@
+{
+  "name": "qoder-check-in",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Qoder CN / Global 每日签到自动化（本机 launchd 或 GitHub Actions 托管）",
+  "scripts": {
+    "checkin": "node scripts/qoder-checkin.mjs claim all",
+    "status": "node scripts/qoder-checkin.mjs status all",
+    "notify": "node scripts/notify.mjs"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.16"
+  }
+}

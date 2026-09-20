@@ -1,0 +1,81 @@
+name: Daily Check-in
+
+on:
+  schedule:
+    # GitHub Actions cron 使用 UTC；00:30 (UTC+8) = 前一日 16:30 UTC
+    - cron: '30 16 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check-in:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --omit=dev --no-audit --no-fund
+
+      - name: Run check-in (CN + Global)
+        env:
+          QODER_TOKEN_CN: ${{ secrets.QODER_TOKEN_CN }}
+          QODER_TOKEN_GLOBAL: ${{ secrets.QODER_TOKEN_GLOBAL }}
+          QODER_REFRESH_TOKEN_CN: ${{ secrets.QODER_REFRESH_TOKEN_CN }}
+          QODER_REFRESH_TOKEN_GLOBAL: ${{ secrets.QODER_REFRESH_TOKEN_GLOBAL }}
+          QODER_API_BASE_GLOBAL: ${{ vars.QODER_API_BASE_GLOBAL }}
+          QODER_OPENAPI_BASE_GLOBAL: ${{ vars.QODER_OPENAPI_BASE_GLOBAL }}
+        run: |
+          set +e
+          node scripts/qoder-checkin.mjs claim all | tee checkin.out
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
+
+      - name: Persist rotated tokens back to Secrets
+        # GITHUB_TOKEN 无权调用仓库 Secrets API（permissions 矩阵也不含 secrets 键），
+        # 必须另配 fine-grained PAT（仅本仓库、Secrets: write）作为 GH_SECRETS_PAT；未配置则跳过并在邮件中提示。
+        if: always() && hashFiles('data/refreshed.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_SECRETS_PAT }}
+        run: |
+          set +e
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo '未配置 GH_SECRETS_PAT，续签轮换结果未回写，请手动运行 export_token.py 更新' > data/writeback.txt
+          else
+            node -e '
+              const fs = require("fs");
+              const j = JSON.parse(fs.readFileSync("data/refreshed.json", "utf8"));
+              for (const [k, v] of Object.entries(j)) fs.writeFileSync(`.secret-${k}`, v);
+            '
+            : > data/writeback.txt
+            for f in .secret-*; do
+              name="${f#.secret-}"
+              if gh secret set "$name" --body "$(cat "$f")" 2>>data/writeback.txt; then
+                echo "已回写 $name" >> data/writeback.txt
+              else
+                echo "回写 $name 失败" >> data/writeback.txt
+              fi
+              rm -f "$f"
+            done
+          fi
+          cat data/writeback.txt
+
+      - name: Send result email
+        if: always()
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+        run: node scripts/notify.mjs
+
+      - name: Fail job if check-in failed
+        if: env.exit_code != '0'
+        run: exit "${exit_code:-0}"
