@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 邮件通知：读取 data/result.json（qoder-checkin.mjs claim 产出），通过 SMTP 发送签到结果汇总。
-// 未配置 SMTP_HOST / MAIL_TO 时静默跳过（本地场景不需要邮件）。
+// 配置来源：单个 Secret/env `MAIL_CONFIG`（多行 KEY=VALUE），也可用同名独立 env 覆盖单项；
+// 缺 SMTP_HOST 或 MAIL_TO 时静默跳过（本地场景不需要邮件）。
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,13 +10,25 @@ const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RESULT_FILE = process.env.QODER_RESULT_FILE || path.join(REPO_ROOT, 'data', 'result.json');
 const WRITEBACK_FILE = process.env.QODER_WRITEBACK_FILE || path.join(REPO_ROOT, 'data', 'writeback.txt');
 
-const SMTP_HOST = process.env.SMTP_HOST;
-const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
-const SMTP_SECURE = (process.env.SMTP_SECURE ?? String(SMTP_PORT === 465)) !== 'false';
-const SMTP_USER = process.env.SMTP_USER;
-const SMTP_PASS = process.env.SMTP_PASS;
-const MAIL_TO = (process.env.MAIL_TO || '').split(',').map(s => s.trim()).filter(Boolean);
-const MAIL_FROM = process.env.MAIL_FROM || SMTP_USER;
+const MAIL_CONFIG = (() => {
+  const cfg = {};
+  for (const line of (process.env.MAIL_CONFIG || '').split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const m = t.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+    if (m) cfg[m[1]] = m[2].trim();
+  }
+  return cfg;
+})();
+const conf = k => process.env[k] || MAIL_CONFIG[k] || '';
+
+const SMTP_HOST = conf('SMTP_HOST');
+const SMTP_PORT = Number(conf('SMTP_PORT') || 465);
+const SMTP_SECURE = (conf('SMTP_SECURE') || String(SMTP_PORT === 465)) !== 'false';
+const SMTP_USER = conf('SMTP_USER');
+const SMTP_PASS = conf('SMTP_PASS');
+const MAIL_TO = conf('MAIL_TO').split(',').map(s => s.trim()).filter(Boolean);
+const MAIL_FROM = conf('MAIL_FROM') || SMTP_USER;
 
 function loadResults() {
   if (!existsSync(RESULT_FILE)) return { summary: null, note: `缺少结果文件 ${RESULT_FILE}` };
@@ -78,7 +91,7 @@ function buildMail(summary) {
 
 async function main() {
   if (!SMTP_HOST || !MAIL_TO.length) {
-    console.log('未配置 SMTP_HOST / MAIL_TO，跳过邮件通知');
+    console.log('未配置 MAIL_CONFIG（需含 SMTP_HOST 与 MAIL_TO），跳过邮件通知');
     return;
   }
   let { summary, note } = loadResults();

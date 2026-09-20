@@ -55,14 +55,26 @@ node scripts/qoder-checkin.mjs claim cn      # 只签 CN
 
 | Secret | 必填 | 说明 |
 |---|---|---|
-| `QODER_TOKEN_CN` | 至少一个 | CN 端 token（`dt-…`），本机执行 `python scripts/export_token.py cn` 导出 |
-| `QODER_TOKEN_GLOBAL` | 至少一个 | Global 端 token，`export_token.py global` 导出 |
+| `QODER_TOKEN_CN` | 两个至少其一 | CN 端 token（`dt-…`），本机执行 `python scripts/export_token.py cn` 导出 |
+| `QODER_TOKEN_GLOBAL` | 两个至少其一 | Global 端 token，`export_token.py global` 导出；两者只配一个也能正常跑（另一端自动跳过） |
 | `QODER_REFRESH_TOKEN_CN` | 建议 | CN 端 refreshToken（`drt-…`），export 脚本一并输出；配置后 token 临期/过期可由 Actions **自动续签**，无需每 20 天手动更新 |
 | `QODER_REFRESH_TOKEN_GLOBAL` | 建议 | Global 端 refreshToken，同上 |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | 否 | 发件 SMTP（默认端口 465 隐式 TLS，可用 `SMTP_SECURE=false` 关闭）；**不配置则不发邮件** |
-| `MAIL_TO` | 否 | 收件地址，逗号分隔；不配则只跳过发邮件 |
-| `MAIL_FROM` | 否 | 发件人显示地址，默认取 `SMTP_USER` |
+| `MAIL_CONFIG` | 否 | 邮件通知的全部参数，**一个 Secret 装多行 `KEY=VALUE`**（见下方示例）；不配置则不发邮件 |
 | `GH_SECRETS_PAT` | 否 | 回写轮换凭据用。**GITHUB_TOKEN 无权调用仓库 Secrets API**（workflow `permissions:` 矩阵中也不存在 `secrets` 键），需新建 fine-grained PAT：只授权本仓库、权限仅 **Secrets: Read and write**、有效期最长 1 年 |
+
+   `MAIL_CONFIG` 内容示例（**以 QQ 邮箱为例**，其他邮箱同理换 host）：
+
+   ```text
+   SMTP_HOST=smtp.qq.com
+   SMTP_PORT=465
+   SMTP_USER=123456789@qq.com
+   SMTP_PASS=qqabcd efgh ijkl mnop
+   MAIL_TO=123456789@qq.com,other@example.com
+   # SMTP_SECURE=false   # 465 默认隐式 TLS；587 端口 STARTTLS 时设为 false
+   # MAIL_FROM=自定义发件地址，默认取 SMTP_USER
+   ```
+
+   QQ 邮箱获取授权码：网页版 设置 → 账号 → 开启「SMTP服务」（需验证手机号）→ 生成 16 位授权码，填入 `SMTP_PASS`（不是 QQ 密码，空格可去掉）。`MAIL_TO` 支持逗号分隔多个收件人。
 
    另有可选 **Variables**：`QODER_API_BASE_GLOBAL`（覆盖 Global 网关域名）、`QODER_OPENAPI_BASE_GLOBAL`（覆盖 Global 续签域名）。
 3. 工作流 `.github/workflows/daily-checkin.yml` 已配置 **每天 00:30（UTC+8）** 自动执行（cron 为 `30 16 * * *` UTC），也可在 Actions 页面手动「Run workflow」。若所有端都未提供任何 token，任务直接以退出码 2 失败。
