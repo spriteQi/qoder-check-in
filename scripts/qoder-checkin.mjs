@@ -31,7 +31,8 @@ const PROFILES = {
     label: 'Qoder Global',
     tokenEnv: 'QODER_TOKEN_GLOBAL',
     refreshEnv: 'QODER_REFRESH_TOKEN_GLOBAL',
-    apiBase: process.env.QODER_API_BASE_GLOBAL || 'https://gateway.qoder.com',
+    // 实测（2026-09-20）：gateway.qoder.com/.sh 均无 DNS 记录，openapi.qoder.sh 是唯一可达的 sash 宿主。
+    apiBase: process.env.QODER_API_BASE_GLOBAL || 'https://openapi.qoder.sh',
     openApiBase: process.env.QODER_OPENAPI_BASE_GLOBAL || 'https://openapi.qoder.sh',
     dataDir: process.env.QODER_DATA_DIR_GLOBAL
       || path.join(os.homedir(), 'Library/Application Support/com.qoder.app.stable'),
@@ -162,8 +163,9 @@ function writeSummary(results) {
     ts: new Date().toISOString(),
     results,
     ok: count(['OK', 'ALREADY_CLAIMED']),
+    noActivity: count(['NO_ACTIVITY', 'ACTIVITY_OFF']),
     skipped: count(['SKIPPED']),
-    failed: count(['AUTH_FAIL', 'TOKEN_EXPIRED', 'FAIL', 'API_ERROR']),
+    failed: count(['AUTH_FAIL', 'TOKEN_EXPIRED', 'FAIL', 'API_ERROR', 'UNVERIFIED']),
   };
   try { mkdirSync(path.dirname(RESULT_FILE), { recursive: true }); writeFileSync(RESULT_FILE, JSON.stringify(summary, null, 2)); } catch {}
   return summary;
@@ -214,6 +216,25 @@ async function runProfile(cmd, name, rotatedOut) {
       log({ ...entry });
       return entry;
     }
+    // 先查活动状态：实测（2026-09-20）活动 DISABLED 时服务端同样返回 409 AlreadyExists，
+    // 因此 409/200 只是「响应成功」，是否真正到账必须以 /status 的前后差值核验。
+    const pre = await httpJson(profile.apiBase + STATUS_PATH, 'GET', null, sess.token);
+    if (pre.status === 404) {
+      Object.assign(entry, { result: 'NO_ACTIVITY', http: 404, detail: pre.body });
+      log({ ...entry });
+      return entry;
+    }
+    const pick = b => b && typeof b === 'object' && {
+      status: b.status, totalClaimDays: b.totalClaimDays,
+      currentStreakDays: b.currentStreakDays, totalRewardCredits: b.totalRewardCredits, nextClaimAt: b.nextClaimAt,
+    };
+    const preBody = pre.status === 200 ? pre.body : null;
+    entry.activityBefore = pick(preBody);
+    if (preBody?.status && !['ACTIVE', 'ENABLED', 'CLAIMABLE'].includes(preBody.status)) {
+      Object.assign(entry, { result: 'ACTIVITY_OFF', http: pre.status, reason: `活动状态 ${preBody.status}，本次未提交领取` });
+      log({ ...entry });
+      return entry;
+    }
     let r = await httpJson(profile.apiBase + CLAIM_PATH, 'POST', null, sess.token);
     if (r.status === 401) {
       // 被动续签：本地凭据重读 或 refresh 接口换新
@@ -225,9 +246,21 @@ async function runProfile(cmd, name, rotatedOut) {
         r = await httpJson(profile.apiBase + CLAIM_PATH, 'POST', null, sess.token);
       }
     }
-    const ok = r.status === 200 || (r.status === 409 && r.body?.errorCode === 'AlreadyExists');
+    // 领后复核：累计值增长=本次到账；nextClaimAt 在未来=今日已领；否则不可信。
+    let post = null;
+    try {
+      const s2 = await httpJson(profile.apiBase + STATUS_PATH, 'GET', null, sess.token);
+      if (s2.status === 200) post = s2.body;
+    } catch {}
+    entry.activityAfter = pick(post);
+    const grew = post && preBody && ['totalClaimDays', 'currentStreakDays', 'totalRewardCredits']
+      .some(k => Number(post[k] ?? 0) > Number(preBody[k] ?? 0));
+    const nc = Number(post?.nextClaimAt ?? 0);
+    const ncMs = nc > 0 && nc < 1e11 ? nc * 1000 : nc; // 秒/毫秒兼容
+    const recorded = ncMs > Date.now();
+    const ok = r.status === 200 || r.status === 409;
     Object.assign(entry, {
-      result: r.status === 409 ? 'ALREADY_CLAIMED' : ok ? 'OK' : 'FAIL',
+      result: !ok ? 'FAIL' : grew ? 'OK' : recorded ? 'ALREADY_CLAIMED' : 'UNVERIFIED',
       http: r.status,
       detail: r.body,
     });
@@ -242,7 +275,7 @@ async function runProfile(cmd, name, rotatedOut) {
 
 function exitCodeFor(results) {
   const has = k => results.some(r => r.result === k);
-  if (has('FAIL') || has('API_ERROR')) return 4;
+  if (has('FAIL') || has('API_ERROR') || has('UNVERIFIED')) return 4;
   if (has('AUTH_FAIL')) return 2;
   if (has('TOKEN_EXPIRED')) return 3;
   return 0;

@@ -40,6 +40,9 @@ const RESULT_LABEL = {
   OK: '签到成功',
   ALREADY_CLAIMED: '今日已领（幂等跳过）',
   SKIPPED: '未配置该端，已跳过',
+  NO_ACTIVITY: '该端暂无签到活动（404），不计失败',
+  ACTIVITY_OFF: '活动未开始/已结束，未领取',
+  UNVERIFIED: '接口应答成功但 /status 未确认到账！',
   AUTH_FAIL: '凭据获取失败',
   TOKEN_EXPIRED: 'token 已过期',
   FAIL: '接口返回失败',
@@ -51,17 +54,22 @@ function esc(s) {
 }
 
 function detailOf(r) {
-  const d = r.detail ?? r.reason ?? '-';
-  if (typeof d === 'object' && d) return `${d.code ?? ''} ${d.message ?? ''}`.trim() || JSON.stringify(d).slice(0, 160);
-  return String(d).slice(0, 160);
+  const parts = [];
+  if (r.reason) parts.push(r.reason);
+  const act = s => s ? `status=${s.status ?? '?'} 累计${s.totalClaimDays ?? 0}天/连击${s.currentStreakDays ?? 0}天/${s.totalRewardCredits ?? 0}分` : null;
+  const a1 = act(r.activityBefore), a2 = act(r.activityAfter);
+  if (a1 || a2) parts.push(`活动状态 ${a1 ?? '-'} → ${a2 ?? '-'}`);
+  const d = r.detail;
+  if (d != null && d !== '-') parts.push(typeof d === 'object' ? `${d.code ?? d.errorCode ?? ''} ${d.message ?? d.errorMessage ?? ''}`.trim() || JSON.stringify(d).slice(0, 120) : String(d).slice(0, 120));
+  return parts.join('；').slice(0, 300) || '-';
 }
 
 function buildMail(summary) {
   const results = summary?.results ?? [];
   const day = (summary?.ts ?? new Date().toISOString()).slice(0, 10);
-  const failed = results.filter(r => ['AUTH_FAIL', 'TOKEN_EXPIRED', 'FAIL', 'API_ERROR'].includes(r.result));
+  const failed = results.filter(r => ['AUTH_FAIL', 'TOKEN_EXPIRED', 'FAIL', 'API_ERROR', 'UNVERIFIED'].includes(r.result));
   const refreshed = results.filter(r => r.refresh?.ok || r.refreshFail);
-  const statusIcon = r => (['OK', 'ALREADY_CLAIMED'].includes(r.result) ? '✅' : r.result === 'SKIPPED' ? '⏭️' : '❌');
+  const statusIcon = r => (['OK', 'ALREADY_CLAIMED'].includes(r.result) ? '✅' : ['SKIPPED', 'NO_ACTIVITY', 'ACTIVITY_OFF'].includes(r.result) ? '⚪️' : r.result === 'UNVERIFIED' ? '⚠️' : '❌');
   const days = n => (n == null ? '-' : `${n} 天`);
   const subject = `[Qoder签到] ${day} ${failed.length ? `失败 ${failed.length}` : '全部完成'}（成功 ${summary?.ok ?? 0} / 跳过 ${summary?.skipped ?? 0} / 失败 ${failed.length}${refreshed.length ? ` / 续签 ${refreshed.length}` : ''}）`;
 
@@ -84,7 +92,7 @@ function buildMail(summary) {
     `${r.label}: ${RESULT_LABEL[r.result] ?? r.result}${r.http ? ` (HTTP ${r.http})` : ''}`,
     r.tokenDaysLeft != null ? ` token 剩余 ${r.tokenDaysLeft} 天` : '',
     r.refresh?.ok ? ` | 🔄 ${r.refresh.note}` : r.refresh ? ` | 🔄 续签失败：${r.refresh.reason}` : r.refreshFail ? ` | 🔄 续签失败：${r.refreshFail}` : '',
-    r.detail ? ` ${detailOf(r)}` : '',
+    r.detail || r.reason || r.activityBefore ? ` ${detailOf(r)}` : '',
   ].join('')).join('\n');
   return { subject, html, text: text || subject };
 }

@@ -12,8 +12,8 @@ Qoder 会不定期上线登录奖励活动（例如 2026-09-18 ~ 09-30，每天 
 ## 原理（逆向结论）
 
 - 签到接口：`POST <gateway>/sash/api/v1/me/daily-check-in/claim`，状态查询为同前缀的 `GET .../status`，认证用 `Authorization: Bearer <token>`（token 即凭据文件里的 `dt-` 设备令牌）。
-- CN 网关为 `https://gateway.qoder.com.cn`；Global 网关默认按 `https://gateway.qoder.com` 处理（未经官方文档证实，如有出入请用 `QODER_API_BASE_GLOBAL` / 仓库 Variable 覆盖）。
-- 重复领取返回 `409 AlreadyExists`，服务端天然幂等，脚本可安全地每天多次运行。
+- CN 签到走 `https://gateway.qoder.com.cn`。**Global 侧实测（2026-09-20）：`gateway.qoder.com`/`gateway.qoder.sh` 无 DNS 记录，唯一可达的 sash 宿主是 `https://openapi.qoder.sh`，且其 daily-check-in 路由返回 404——即 Global 当前没有签到活动**。脚本将其识别为 `NO_ACTIVITY`（不计失败），Global 日后上线活动时无需改代码即可自动生效；如有出入可用 `QODER_API_BASE_GLOBAL` / 仓库 Variable 覆盖。
+- ~~重复领取返回 `409 AlreadyExists`，可视为幂等成功~~ **已证伪（2026-09-20 实测）**：活动处于 `DISABLED` 时服务端同样返回 `409 AlreadyExists`，但并未发放任何 Credits。现在脚本以 `GET .../status` **前后双核验**判定真实结果：领取前查活动状态（非 ACTIVE 直接记 `ACTIVITY_OFF` 不再提交），领取后比对 `totalClaimDays/currentStreakDays/totalRewardCredits` 是否增长、`nextClaimAt` 是否推到未来；应答成功但状态无变化记 `UNVERIFIED`（计为失败）。
 - **续签机制**（从官方客户端逆向）：`token`（`dt-` 前缀设备令牌，约 20 天）+ `refreshToken`（`drt-` 前缀，约 1 年）双令牌。续签接口 `POST {openApiBaseUrl}/api/v1/deviceToken/refresh`，请求体 `{"refresh_token":"drt-…"}`，响应为 snake_case（`device_token`/`refresh_token`/`expires_at`/`refresh_token_expires_at`），且 **refreshToken 每次都会轮换**。CN openApi 域名为 `https://openapi.qoder.com.cn`，Global 为 `https://openapi.qoder.sh`（取自 IDE 安装包 `openApiBaseUrl` 常量）。
 - 本机凭据文件 `auth.v1.dat`（`{"token","refreshToken","expiresAt","refreshTokenExpiresAt","user",...}`）：macOS 为 Electron safeStorage（`v10` 前缀；钥匙串取密码；PBKDF2-SHA1，salt `saltysalt`，1003 次迭代，AES-128-CBC，IV 为 16 个 `0x20`）；Windows 为 Chromium os_crypt（`Local State` 中 DPAPI 包裹的 AES-256 密钥 + AES-GCM），`export_token.py` 两种平台均支持。
 - Actions 托管模式无法解密本机钥匙串，改为通过仓库 Secrets 直传 token。
