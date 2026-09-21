@@ -22,17 +22,19 @@ jobs:
       - name: Install dependencies
         run: npm install --omit=dev --no-audit --no-fund
 
-      - name: Run check-in (CN + Global)
+      - name: Run check-in (CN)
+        # Global 自动签到当前无活动、已确认不可用，暂只跑 CN；恢复时把 claim cn 改回 claim all，
+        # 并取消下面两行 Global secret 的注释。
         env:
           QODER_TOKEN_CN: ${{ secrets.QODER_TOKEN_CN }}
-          QODER_TOKEN_GLOBAL: ${{ secrets.QODER_TOKEN_GLOBAL }}
           QODER_REFRESH_TOKEN_CN: ${{ secrets.QODER_REFRESH_TOKEN_CN }}
-          QODER_REFRESH_TOKEN_GLOBAL: ${{ secrets.QODER_REFRESH_TOKEN_GLOBAL }}
+          # QODER_TOKEN_GLOBAL: ${{ secrets.QODER_TOKEN_GLOBAL }}
+          # QODER_REFRESH_TOKEN_GLOBAL: ${{ secrets.QODER_REFRESH_TOKEN_GLOBAL }}
           QODER_API_BASE_GLOBAL: ${{ vars.QODER_API_BASE_GLOBAL }}
           QODER_OPENAPI_BASE_GLOBAL: ${{ vars.QODER_OPENAPI_BASE_GLOBAL }}
         run: |
           set +e
-          node scripts/qoder-checkin.mjs claim all | tee checkin.out
+          node scripts/qoder-checkin.mjs claim cn | tee checkin.out
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
 
       - name: Persist rotated tokens back to Secrets

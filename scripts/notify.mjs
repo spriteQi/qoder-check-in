@@ -56,6 +56,11 @@ function esc(s) {
 function detailOf(r) {
   const parts = [];
   if (r.reason) parts.push(r.reason);
+  if (Array.isArray(r.campaigns?.grants) && r.campaigns.grants.length) {
+    parts.push('领取明细：' + r.campaigns.grants.map(g => `${g.key}${g.amount ? ` +${g.amount}` : ''}${g.replayed ? '（回放）' : ''}`).join('，'));
+  } else if (r.campaigns?.supported && r.campaigns.total === 0) {
+    parts.push('活动列表当前为空（未派发/已领完/未到开窗）');
+  }
   const act = s => s ? `status=${s.status ?? '?'} 累计${s.totalClaimDays ?? 0}天/连击${s.currentStreakDays ?? 0}天/${s.totalRewardCredits ?? 0}分` : null;
   const a1 = act(r.activityBefore), a2 = act(r.activityAfter);
   if (a1 || a2) parts.push(`活动状态 ${a1 ?? '-'} → ${a2 ?? '-'}`);

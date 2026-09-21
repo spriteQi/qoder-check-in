@@ -43,6 +43,8 @@ const PROFILES = {
 
 const STATUS_PATH = '/sash/api/v1/me/daily-check-in/status';
 const CLAIM_PATH = '/sash/api/v1/me/daily-check-in/claim';
+const CAMPAIGNS_PATH = '/sash/api/v1/me/campaigns';
+const campaignClaimPath = id => `/sash/api/v1/me/campaigns/${id}/claim`;
 const REFRESH_PATH = '/api/v1/deviceToken/refresh';
 const LOG_FILE = process.env.QODER_CHECKIN_LOG || path.join(REPO_ROOT, 'data', 'checkin.log');
 const RESULT_FILE = process.env.QODER_RESULT_FILE || path.join(REPO_ROOT, 'data', 'result.json');
@@ -176,6 +178,24 @@ function addExpiryInfo(entry, sess) {
   if (sess.refreshTokenExpiresAt) entry.refreshTokenDaysLeft = Math.max(0, Math.round((sess.refreshTokenExpiresAt - Date.now()) / DAY));
 }
 
+// 新活动系统（2026-09-20 抓包实锤）：GET campaigns 列表 → 对 CLAIMABLE 逐项 POST claim。
+// 端点挂 openApi 域名；claim 幂等（响应含 replayed 标记），dt 设备令牌直接可用。
+async function campaignSweep(profile, token, doClaim) {
+  const list = await httpJson(profile.openApiBase + CAMPAIGNS_PATH, 'GET', null, token);
+  if (list.status !== 200 || typeof list.body !== 'object') return { supported: false, http: list.status };
+  const campaigns = list.body.campaigns ?? [];
+  const grants = [];
+  if (doClaim) for (const c of campaigns.filter(x => x.claimStatus === 'CLAIMABLE' && x.actionType === 'CLAIM_BENEFIT')) {
+    const g = await httpJson(profile.openApiBase + campaignClaimPath(c.campaignId), 'POST', null, token);
+    grants.push({
+      key: c.campaignKey, id: c.campaignId, amount: c.benefit?.amount ?? null,
+      status: typeof g.body === 'object' ? g.body?.status : undefined,
+      replayed: typeof g.body === 'object' ? g.body?.replayed : undefined, http: g.status,
+    });
+  }
+  return { supported: true, show: !!list.body.showCampaign, total: campaigns.length, grants };
+}
+
 async function runProfile(cmd, name, rotatedOut) {
   const profile = PROFILES[name];
   const entry = { profile: name, label: profile.label };
@@ -211,10 +231,36 @@ async function runProfile(cmd, name, rotatedOut) {
   }
   try {
     if (cmd === 'status') {
-      const r = await httpJson(profile.apiBase + STATUS_PATH, 'GET', null, sess.token);
-      Object.assign(entry, { result: 'INFO', http: r.status, detail: r.body });
+      const [r, sweep] = await Promise.all([
+        httpJson(profile.apiBase + STATUS_PATH, 'GET', null, sess.token),
+        campaignSweep(profile, sess.token, false),
+      ]);
+      Object.assign(entry, {
+        result: 'INFO', http: r.status, detail: r.body,
+        campaigns: sweep.supported ? { show: sweep.show, total: sweep.total } : { unsupported: true, http: sweep.http },
+      });
       log({ ...entry });
       return entry;
+    }
+    // 首选新活动系统：扫描并领取所有 CLAIMABLE campaign（幂等）。
+    const sweep = await campaignSweep(profile, sess.token, true);
+    if (sweep.supported) {
+      entry.campaigns = sweep;
+      if (sweep.grants.length) {
+        const bad = sweep.grants.filter(g => g.status !== 'CLAIMED');
+        Object.assign(entry, {
+          result: bad.length ? 'FAIL' : 'OK', http: 200,
+          detail: `已领 ${sweep.grants.length} 项：` + sweep.grants.map(g => `${g.key}${g.amount ? ` +${g.amount}` : ''}${g.replayed ? '（回放）' : ''}`).join('，'),
+        });
+        log({ ...entry });
+        return entry;
+      }
+      if (sweep.total > 0) {
+        Object.assign(entry, { result: 'ALREADY_CLAIMED', http: 200, detail: `${sweep.total} 个在架活动均已领取完毕` });
+        log({ ...entry });
+        return entry;
+      }
+      // 列表为空 → 继续走 legacy daily-check-in 兜底探测
     }
     // 先查活动状态：实测（2026-09-20）活动 DISABLED 时服务端同样返回 409 AlreadyExists，
     // 因此 409/200 只是「响应成功」，是否真正到账必须以 /status 的前后差值核验。
@@ -283,7 +329,9 @@ function exitCodeFor(results) {
 
 async function main() {
   const cmd = process.argv[2] || 'status';
-  const profileArg = process.argv[3] || 'all';
+  // 默认只跑 CN：Global 自动签到当前无活动、已确认不可用（如需恢复传 all/global）。
+  const DEFAULT_PROFILE = 'cn';
+  const profileArg = process.argv[3] || DEFAULT_PROFILE;
   // 不用 process.exit：Windows 下会与 fetch 连接句柄清理冲突触发 libuv 断言，改为自然退出。
   if (cmd === 'token') {
     // 仅供本地查看 token、复制到 GitHub Secrets 用，不参与定时任务。

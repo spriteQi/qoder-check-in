@@ -1,6 +1,6 @@
 # qoder-check-in
 
-Qoder「每日签到领 Credits」自动化，**同时支持 Qoder CN 与 Qoder Global**。纯 HTTP 实现：不开 GUI、不做屏幕点击、不存储任何凭据副本。两种运行方式：
+Qoder「每日签到领 Credits」自动化，**当前默认仅执行 Qoder CN**（Qoder Global 代码保留但停用——实测其活动系统暂无可领派发，详见下文）。纯 HTTP 实现：不开 GUI、不做屏幕点击、不存储任何凭据副本。两种运行方式：
 
 - **本机 macOS（launchd）**：复用本机 Qoder IDE 已登录的凭据直接签到；
 - **GitHub Actions 托管（推荐）**：无需开机，每天定时执行，结果邮件通知。
@@ -11,7 +11,12 @@ Qoder 会不定期上线登录奖励活动（例如 2026-09-18 ~ 09-30，每天 
 
 ## 原理（逆向结论）
 
-- 签到接口：`POST <gateway>/sash/api/v1/me/daily-check-in/claim`，状态查询为同前缀的 `GET .../status`，认证用 `Authorization: Bearer <token>`（token 即凭据文件里的 `dt-` 设备令牌）。
+- **现行活动系统（2026-09-20 mitm 抓包实锤，取代旧 daily-check-in）**：
+  - 列表 `GET {openApi}/sash/api/v1/me/campaigns` → `{showCampaign, claimable, campaigns:[{campaignId, campaignKey(如 act-20260920-044), actionType:"CLAIM_BENEFIT", startAt, endAt, claimStatus:"CLAIMABLE|CLAIMED", benefit:{kind:"CREDITS", amount, validity}}]}`；每日活动即当天派发的 campaign（开窗 startAt=当日 10:00+8，endAt=次日 09:59）。
+  - 领取 `POST {openApi}/sash/api/v1/me/campaigns/{campaignId}/claim` → `{status:"CLAIMED", replayed, grantId, claimedAt}`，**幂等且带重放标记**；`dt-` 设备令牌直接可领（已实测回放成功）。Global（openapi.qoder.sh）同构支持。
+  - UI 形态是 `growth-page/activity-iframe` 网页（iframe 用 `jt-` jobToken + postMessage 桥），但脚本无需走 webview，直接列表+领取即可。
+  - 脚本现逻辑：campaigns 扫描领取所有 CLAIMABLE → 有 grant 即 OK；列表有项但无可领 → ALREADY_CLAIMED；列表为空 → 回落 legacy daily-check-in 探测（`cn_daily_check_in_legacy` 现为 DISABLED，其 409 不代表已领）。
+- 旧接口：`POST <gateway>/sash/api/v1/me/daily-check-in/claim`（仅作兜底探测保留）。
 - CN 签到走 `https://gateway.qoder.com.cn`。**Global 侧实测（2026-09-20）：`gateway.qoder.com`/`gateway.qoder.sh` 无 DNS 记录，唯一可达的 sash 宿主是 `https://openapi.qoder.sh`，且其 daily-check-in 路由返回 404——即 Global 当前没有签到活动**。脚本将其识别为 `NO_ACTIVITY`（不计失败），Global 日后上线活动时无需改代码即可自动生效；如有出入可用 `QODER_API_BASE_GLOBAL` / 仓库 Variable 覆盖。
 - ~~重复领取返回 `409 AlreadyExists`，可视为幂等成功~~ **已证伪（2026-09-20 实测）**：活动处于 `DISABLED` 时服务端同样返回 `409 AlreadyExists`，但并未发放任何 Credits。现在脚本以 `GET .../status` **前后双核验**判定真实结果：领取前查活动状态（非 ACTIVE 直接记 `ACTIVITY_OFF` 不再提交），领取后比对 `totalClaimDays/currentStreakDays/totalRewardCredits` 是否增长、`nextClaimAt` 是否推到未来；应答成功但状态无变化记 `UNVERIFIED`（计为失败）。
 - **续签机制**（从官方客户端逆向）：`token`（`dt-` 前缀设备令牌，约 20 天）+ `refreshToken`（`drt-` 前缀，约 1 年）双令牌。续签接口 `POST {openApiBaseUrl}/api/v1/deviceToken/refresh`，请求体 `{"refresh_token":"drt-…"}`，响应为 snake_case（`device_token`/`refresh_token`/`expires_at`/`refresh_token_expires_at`），且 **refreshToken 每次都会轮换**。CN openApi 域名为 `https://openapi.qoder.com.cn`，Global 为 `https://openapi.qoder.sh`（取自 IDE 安装包 `openApiBaseUrl` 常量）。
@@ -38,12 +43,12 @@ npm install          # 仅邮件通知需要；本机不装也能跑签到
 
 首次运行会弹出 macOS 钥匙串授权对话框，输入登录密码并点「始终允许」——之后定时任务不再弹窗。
 
-手动操作（profile 可选 `cn` / `global` / `all`，默认 `all`，未安装/未登录的端自动跳过）：
+手动操作（profile 可选 `cn` / `global` / `all`，默认 `cn`；Global 暂停自动签到，显式传 `global`/`all` 仍可跑）：
 
 ```bash
-node scripts/qoder-checkin.mjs status        # 查看活动状态（只读）
-node scripts/qoder-checkin.mjs claim         # 执行签到（幂等，两端都跑）
-node scripts/qoder-checkin.mjs claim cn      # 只签 CN
+node scripts/qoder-checkin.mjs status        # 查看 CN 活动状态（只读）
+node scripts/qoder-checkin.mjs claim         # 执行签到（幂等，默认 CN）
+node scripts/qoder-checkin.mjs claim all     # 两端都跑（含已停用的 Global）
 ```
 
 退出码：`0` 成功或今日已领；`2` 无法获取凭据（未登录/钥匙串未授权/完全未提供 token）；`3` token 过期且自动续签也失败；`4` 接口报错（如活动未开始/已结束）。
@@ -55,10 +60,9 @@ node scripts/qoder-checkin.mjs claim cn      # 只签 CN
 
 | Secret | 必填 | 说明 |
 |---|---|---|
-| `QODER_TOKEN_CN` | 两个至少其一 | CN 端 token（`dt-…`），本机执行 `python scripts/export_token.py cn` 导出 |
-| `QODER_TOKEN_GLOBAL` | 两个至少其一 | Global 端 token，`export_token.py global` 导出；两者只配一个也能正常跑（另一端自动跳过） |
+| `QODER_TOKEN_CN` | 是 | CN 端 token（`dt-…`），本机执行 `python scripts/export_token.py cn` 导出 |
 | `QODER_REFRESH_TOKEN_CN` | 建议 | CN 端 refreshToken（`drt-…`），export 脚本一并输出；配置后 token 临期/过期可由 Actions **自动续签**，无需每 20 天手动更新 |
-| `QODER_REFRESH_TOKEN_GLOBAL` | 建议 | Global 端 refreshToken，同上 |
+| `QODER_TOKEN_GLOBAL` / `QODER_REFRESH_TOKEN_GLOBAL` | 暂不需 | Global 自动签到已停用（实测无可领活动）；代码保留，日后恢复时再配 |
 | `MAIL_CONFIG` | 否 | 邮件通知的全部参数，**一个 Secret 装多行 `KEY=VALUE`**（见下方示例）；不配置则不发邮件 |
 | `GH_SECRETS_PAT` | 否 | 回写轮换凭据用。**GITHUB_TOKEN 无权调用仓库 Secrets API**（workflow `permissions:` 矩阵中也不存在 `secrets` 键），需新建 fine-grained PAT：只授权本仓库、权限仅 **Secrets: Read and write**、有效期最长 1 年 |
 
